@@ -3,3 +3,5 @@
 
 ## Tech Stack
 - Python
+- Twilio
+- Deepgram
