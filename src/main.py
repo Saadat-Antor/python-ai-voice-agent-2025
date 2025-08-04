@@ -22,19 +22,82 @@ def load_config():
         return json.load(file)
     
 async def handle_barge_in(decoded, twilio_ws, streamsid):
-    pass
+    if decoded["type"] == "UserStartedSpeaking":
+        clear_message = {
+            "event": "clear",
+            "streamSid": streamsid
+        }
+        await twilio_ws.send(json.dumps(clear_message))
 
 async def handle_text_message(decoded, twilio_ws, sts_ws, streamsid):
-    pass
+    await handle_barge_in(decoded, twilio_ws, streamsid)
+
+    # ToDo: handle function calling
 
 async def sts_sender(sts_ws, audio_queue):
-    pass
+    print("sts_sender has started")
+    while True:
+        chunk = await audio_queue.get()
+        await sts_ws.send(chunk)
 
 async def sts_receiver(sts_ws, twilio_ws, streamsid_queue):
-    pass
+    print("sts_receiver has started")
+    streamsid = await streamsid_queue.get()
+
+    async for message in sts_ws:
+        if type(message) is str:
+            print(message)
+            decoded = json.loads(message)
+            await handle_text_message(decoded, twilio_ws, sts_ws, streamsid)
+            continue
+
+        raw_mulaw = message
+        media_message = {
+            "event": "media",
+            "streamSid": streamsid,
+            "media": {
+                "payload": base64.b64encode(raw_mulaw).decode("ascii")
+            }
+        }
+        await twilio_ws.send(json.dumps(media_message))
+
+
 
 async def twilio_receiver(twilio_ws, audio_queue, streamsid_queue):
-    pass
+    BUFFER_SIZE = 20 * 160
+    inbuffer = bytearray(b"")
+
+    async for message in twilio_ws:
+        try:
+            data = json.loads(message)
+            event = data.get("event")
+
+            if event == "start":
+                print("get our streamsid")
+                start = data.get("start")
+                streamsid = start.get("streamSid")
+                streamsid_queue.put_nowait(streamsid)
+
+            elif event == "connected":
+                continue
+
+            elif event == "media":
+                media = data.get("media")
+                chunk = base64.b64decode(media.get("payload"))
+                if media["track"] == "inbound":
+                    inbuffer.extend(chunk)
+            
+            elif event == "stop":
+                break
+
+            while len(inbuffer) >= BUFFER_SIZE:
+                chunk = inbuffer[:BUFFER_SIZE]
+                audio_queue.put_nowait(chunk)
+                inbuffer = inbuffer[BUFFER_SIZE:]
+
+        except:
+            break
+
 
 async def twilio_handler(twilio_ws):
     audio_queue = asyncio.Queue()
@@ -44,6 +107,7 @@ async def twilio_handler(twilio_ws):
         config_message = load_config()
         await sts_ws.send(json.dumps(config_message))
 
+        # keep the three tasks running concurrently
         await asyncio.wait(
             [
                 asyncio.ensure_future(sts_sender(sts_ws, audio_queue)),
